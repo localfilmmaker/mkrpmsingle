@@ -1,0 +1,107 @@
+#!/usr/bin/perl
+
+# This script will help build an rpm for a single file.
+
+use strict;
+use warnings;
+use File::Basename;
+use Cwd;
+
+if (! @ARGV) {
+    die "Usage: $0 /path/to/file/to/package";
+}
+
+our $rpm_base_dir = $ENV{HOME} .'/rpm';
+our $tmp_dir = "$rpm_base_dir/tmp";
+our $src_dir = "$rpm_base_dir/SOURCES";
+our $spec_dir = "$rpm_base_dir/SPECS";
+
+
+my $file_to_package = shift @ARGV;
+my $filename = basename($file_to_package);
+
+my $package_basename = $filename;
+$package_basename =~ s/\..*?$//;  # no extension
+
+$package_basename = prompt("Package name [%s] ? ", $package_basename);
+my $version = prompt("Rpm version [%s] ? ", 1);
+
+# clean up any old files and dirs for this package and version
+system("rm -rf $tmp_dir/$package_basename*");
+
+# create a dir for tarball
+my $old_pwd = getcwd();
+print "Creating new dir for tarball.\n";
+system("mkdir -p $tmp_dir/$package_basename-$version");
+print "Copying file in place for tarball.\n";
+system("cp -a $file_to_package $tmp_dir/$package_basename-$version");
+chdir($tmp_dir);
+print "Creating tarball.\n";
+my $tarball = "$package_basename-$version.tgz";
+system("tar zcvf $tarball $package_basename-$version/");
+chdir($old_pwd);
+
+# move the tarball in place for rpmbuild
+system("mv $tmp_dir/$package_basename-$version.tgz $src_dir/");
+
+# prep the spec file
+my $spec_tmpl = do {local $/; <DATA>; };
+
+my %params = (
+    PACKAGE_NAME => $package_basename,
+    VERSION      => $version,
+    TARBALL      => $tarball,
+    FILENAME     => $filename,
+);
+foreach my $field (qw/ summary release description destination_dir /) {
+    $params{uc $field} = prompt("Enter $field [%s] : ", '');
+}
+
+my $spec = $spec_tmpl;
+$spec =~ s/__([\w_]+)__/$params{$1} || ''/egs;
+
+# save spec file
+my $spec_filename = "$spec_dir/$package_basename-$version.spec";
+open my $out, '>', "$spec_filename"  or die "cannot write spec file $spec_filename: $!";
+print {$out} $spec;
+close $out;
+
+# build the rpm
+system("rpmbuild -ba $spec_filename");
+
+
+#---------------------------------
+
+sub prompt {
+    my ($message, $default) = @_;
+    printf $message, $default;
+    chomp(my $answer = <STDIN>);
+    return $answer || $default;
+}
+
+
+__DATA__
+Summary: __SUMMARY__
+Name: __PACKAGE_NAME__
+Version: __VERSION__
+Release: __RELEASE__
+Source0: __TARBALL__
+License: Internal
+Group: Internal
+BuildArch: noarch
+BuildRoot: %{_tmppath}/%{name}-%{version}-buildroot
+%description
+__DESCRIPTION__
+%prep
+%setup -q
+%build
+%install
+install -m 0755 -d $RPM_BUILD_ROOT/__DESTINATION_DIR__
+install -m 0755 __FILENAME__ $RPM_BUILD_ROOT/__DESTINATION_DIR__/__FILENAME__
+%clean
+rm -rf $RPM_BUILD_ROOT
+%files
+%defattr(-,root,root,-)
+%dir __DESTINATION_DIR__
+__DESTINATION_DIR__/__FILENAME__
+
